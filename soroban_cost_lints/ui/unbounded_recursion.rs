@@ -60,4 +60,11 @@ fn passthrough(n: u32) {
     passthrough(n - 1);
 }
 
+// Modular helper module for unbounded recursion checks
+pub mod helper {
+    pub fn check_recursion_depth(depth: u32) -> bool {
+        depth < 100
+    }
+}
+
 fn main() {}
