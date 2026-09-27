@@ -54,8 +54,7 @@ fn is_ledger_receiver(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     {
         // The receiver of ledger() should be an Env-like type
         let ty = cx.typeck_results().expr_ty(receiver);
-        let ty_str = format!("{:?}", ty);
-        return ty_str.contains("Env");
+        return ty.to_string().contains("Env");
     }
     false
 }
