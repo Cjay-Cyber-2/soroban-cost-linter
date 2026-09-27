@@ -1,9 +1,16 @@
-// UI test suite for the `redundant_env_clone` lint rule.
-//
-// Each test case is self-contained with a minimal mock of `soroban_sdk::Env`
-// so the file compiles without the real Soroban SDK dependency.
+//! # UI Test Suite: `redundant_env_clone`
+//!
+//! This module contains UI test cases for the `redundant_env_clone` lint rule.
+//! The lint detects unnecessary `.clone()` calls on the Soroban `Env` object where
+//! the original `Env` is no longer used, avoiding redundant host interactions
+//! and overhead.
+//!
+//! Each test case is self-contained with a minimal mock of `soroban_sdk::Env`
+//! so the file compiles without requiring the real Soroban SDK dependency.
 
+/// Mock implementation of the `soroban_sdk` crate for UI testing purposes.
 pub mod soroban_sdk {
+    /// Represents the Soroban host environment handle.
     pub struct Env;
     impl Clone for Env {
         fn clone(&self) -> Self {
@@ -33,6 +40,7 @@ pub mod soroban_sdk {
         }
     }
 
+    /// Struct containing an `Env` field to test non-local receiver skipping.
     pub struct MyStruct {
         pub env: Env,
     }
