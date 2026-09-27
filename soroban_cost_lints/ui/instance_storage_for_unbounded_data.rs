@@ -70,13 +70,13 @@ use soroban_sdk::{Bytes, Env, Map, Vec};
 
 fn bad_vec_in_instance_storage(env: Env) {
     let _existing: Option<Vec> = env.storage().instance().get(&1u32);
-    let items: Vec = Vec::new();
+    let items = Vec::new();
     env.storage().instance().set(&1u32, &items); // Should Warn
 }
 
 fn bad_map_in_instance_storage(env: Env) {
     let _existing: Option<Map> = env.storage().instance().get(&2u32);
-    let entries: Map = Map::new();
+    let entries = Map::new();
     env.storage().instance().set(&2u32, &entries); // Should Warn
 }
 
