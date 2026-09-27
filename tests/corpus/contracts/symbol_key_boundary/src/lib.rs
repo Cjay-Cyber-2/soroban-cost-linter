@@ -24,11 +24,11 @@ impl SymbolKeyBoundaryContract {
     /// verify lint behavior around the 9-character boundary.
     pub fn test_symbols(env: Env) {
         // Short symbols (≤9 chars) - can use symbol_short! macro
-        let _s1 = create_short_symbol(&env, "short_9");
-        let _s2 = create_short_symbol(&env, "a");
+        let _s1 = Self::create_short_symbol(&env, "short_9");
+        let _s2 = Self::create_short_symbol(&env, "a");
 
         // Long symbols (>9 chars) - must use Symbol::new
-        let _l1 = create_long_symbol(&env, "longer_than_nine");
+        let _l1 = Self::create_long_symbol(&env, "longer_than_nine");
 
         // Macro-created short symbol
         let _m1 = symbol_short!("short_9");
