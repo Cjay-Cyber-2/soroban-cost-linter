@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{symbol_short, contract, contractimpl, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, Env, Symbol, Vec};
 
 const SUM_KEY: Symbol = symbol_short!("sum");
 
@@ -12,11 +12,11 @@ pub struct UnboundedInputLoopFixtureContract;
 impl UnboundedInputLoopFixtureContract {
     pub fn sum_and_persist(env: Env, input: Vec<u32>) -> u32 {
         let mut total = 0u32;
+        // Cache storage instance to avoid repeated getter calls
+        let storage = env.storage().instance();
         for item in input.iter() {
             total = total.wrapping_add(item);
-            env.storage()
-                .instance()
-                .set(&SUM_KEY, &total);
+            storage.set(&SUM_KEY, &total);
         }
         total
     }
@@ -24,10 +24,13 @@ impl UnboundedInputLoopFixtureContract {
     // Good: storage write happens once, outside the loop.
     pub fn sum_then_persist_once(env: Env, input: Vec<u32>) -> u32 {
         let mut total = 0u32;
+        // Use iterator without unnecessary intermediate allocations
         for item in input.iter() {
             total = total.wrapping_add(item);
         }
-        env.storage().instance().set(&SUM_KEY, &total);
+        // Cache storage instance reference to avoid redundant calls
+        let storage = env.storage().instance();
+        storage.set(&SUM_KEY, &total);
         total
     }
 }
