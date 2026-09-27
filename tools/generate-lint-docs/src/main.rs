@@ -750,4 +750,39 @@ multiline description"
             "--check should pass when all generated files match"
         );
     }
+
+    #[test]
+    fn missing_lib_rs_exits_with_error() {
+        let bin = find_binary();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let status = Command::new(&bin)
+            .args(["--workspace-root", root.to_str().unwrap()])
+            .status()
+            .expect("Failed to execute binary");
+        assert!(
+            !status.success(),
+            "binary should exit with non-zero when lib.rs is missing"
+        );
+    }
+
+    #[test]
+    fn non_check_mode_writes_files() {
+        let bin = find_binary();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let fake_lib = root.join("soroban_cost_lints/src/lib.rs");
+        fs::create_dir_all(fake_lib.parent().unwrap()).unwrap();
+        fs::write(&fake_lib, SINGLE_LINT).unwrap();
+
+        let status = Command::new(&bin)
+            .args(["--workspace-root", root.to_str().unwrap()])
+            .status()
+            .expect("Failed to execute binary");
+        assert!(status.success(), "binary should succeed when writing files");
+        assert!(root.join("docs/lints/README.md").exists());
+        assert!(root.join("docs/lint_catalog.md").exists());
+    }
 }
