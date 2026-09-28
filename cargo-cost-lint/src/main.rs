@@ -8,7 +8,7 @@ mod output_formatters;
 
 use clap::{ArgGroup, Parser, ValueEnum};
 use output_formatters::{LintFinding, OutputFormat, Span};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -120,10 +120,7 @@ struct Cli {
     diff_only: bool,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct BudgetConfig {
-    pub lints: Option<std::collections::HashMap<String, String>>,
-}
+use config::BudgetConfig;
 
 /// Colour-policy preference forwarded to the underlying `cargo dylint`
 /// (and therefore `rustc`) invocation.
@@ -318,6 +315,7 @@ pub fn build_effective_lint_flags(
 
     for (lints, level_name, flag) in cli_groups {
         for lint in lints {
+            let lint = lint.replace('-', "_");
             if !LINT_NAMES_SET.contains(lint.as_str()) {
                 let valid = LINT_NAMES.join(", ");
                 return Err(format!(
@@ -325,7 +323,7 @@ pub fn build_effective_lint_flags(
                     lint, valid
                 ));
             }
-            if let Some((existing_level, _)) = cli_levels.get(lint) {
+            if let Some((existing_level, _)) = cli_levels.get(&lint) {
                 if *existing_level != level_name {
                     return Err(format!(
                         "Error: Conflicting lint levels specified for '{}': cannot set to both '{}' and '{}'",
@@ -344,6 +342,7 @@ pub fn build_effective_lint_flags(
 
     if let Some(lints) = config.and_then(|cfg| cfg.lints.as_ref()) {
         for (lint, level) in lints {
+            let lint = lint.replace('-', "_");
             if !LINT_NAMES_SET.contains(lint.as_str()) {
                 let valid = LINT_NAMES.join(", ");
                 return Err(format!(
@@ -518,7 +517,8 @@ pub fn resolve_config(config_arg: Option<&str>) -> Result<Option<PathBuf>, Strin
 // Kept: scaffolding for future feature implementations
 #[allow(dead_code)]
 fn parse_budget_config(path: &str) -> Result<Vec<String>, String> {
-    let config = config::BudgetConfig::from_file_validated(Path::new(path), LINT_NAMES)?;
+    let config = config::BudgetConfig::from_file_validated(Path::new(path), LINT_NAMES)
+        .map_err(|e| e.to_string())?;
 
     let mut lint_flags = Vec::new();
     if let Some(lints) = config.lints {
@@ -660,13 +660,11 @@ fn main() {
         } else if !quiet {
             eprintln!("Using config: {}", path.display());
         }
-        if let Ok(config_str) = fs::read_to_string(path) {
-            if let Ok(config) = toml::from_str::<BudgetConfig>(&config_str) {
-                config_opt = Some(config);
-            } else {
-                if !quiet {
-                    eprintln!("Warning: Failed to parse {}", path.display());
-                }
+        match config::BudgetConfig::from_file_validated(path, LINT_NAMES) {
+            Ok(config) => config_opt = Some(config),
+            Err(e) => {
+                eprintln!("{}", e);
+                exit(1);
             }
         }
     } else {

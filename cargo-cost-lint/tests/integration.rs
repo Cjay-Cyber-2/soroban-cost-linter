@@ -481,7 +481,7 @@ fn forbid_level_in_budget_toml_is_rejected() {
         "stderr was: {stderr_str}"
     );
     assert!(
-        stderr_str.contains("for lint 'soroban_storage_in_loop'"),
+        stderr_str.contains("for 'soroban_storage_in_loop'"),
         "stderr was: {stderr_str}"
     );
 }
