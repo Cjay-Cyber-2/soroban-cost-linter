@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command, Stdio};
+use std::process::{Command, Stdio, exit};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
