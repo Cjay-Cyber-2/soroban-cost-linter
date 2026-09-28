@@ -77,3 +77,150 @@ impl From<&str> for LinterError {
         LinterError::Other(s.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn display_io_error() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        let err = LinterError::Io(io_err);
+        let msg = format!("{}", err);
+        assert!(msg.contains("I/O error"));
+        assert!(msg.contains("file not found"));
+    }
+
+    #[test]
+    fn display_json_error() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err = LinterError::Json(json_err);
+        let msg = format!("{}", err);
+        assert!(msg.contains("JSON error"));
+    }
+
+    #[test]
+    fn display_subprocess_error_with_code() {
+        let err = LinterError::Subprocess { code: Some(42) };
+        let msg = format!("{}", err);
+        assert!(msg.contains("subprocess exited with code"));
+        assert!(msg.contains("42"));
+    }
+
+    #[test]
+    fn display_subprocess_error_without_code() {
+        let err = LinterError::Subprocess { code: None };
+        let msg = format!("{}", err);
+        assert!(msg.contains("subprocess exited with code None"));
+    }
+
+    #[test]
+    fn display_missing_prerequisite() {
+        let err = LinterError::MissingPrerequisite("cargo-dylint not installed".to_string());
+        let msg = format!("{}", err);
+        assert_eq!(msg, "cargo-dylint not installed");
+    }
+
+    #[test]
+    fn display_other_error() {
+        let err = LinterError::Other("something went wrong".to_string());
+        let msg = format!("{}", err);
+        assert_eq!(msg, "something went wrong");
+    }
+
+    #[test]
+    fn source_returns_inner_for_io() {
+        let io_err = io::Error::other("test");
+        let err = LinterError::Io(io_err);
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn source_returns_inner_for_json() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err = LinterError::Json(json_err);
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn source_returns_none_for_other() {
+        let err = LinterError::Other("test".to_string());
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn source_returns_none_for_missing_prerequisite() {
+        let err = LinterError::MissingPrerequisite("test".to_string());
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn source_returns_none_for_subprocess() {
+        let err = LinterError::Subprocess { code: Some(1) };
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn from_io_error_conversion() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        let err: LinterError = io_err.into();
+        match err {
+            LinterError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::PermissionDenied),
+            _ => panic!("expected Io variant"),
+        }
+    }
+
+    #[test]
+    fn from_json_error_conversion() {
+        let json_err = serde_json::from_str::<serde_json::Value>("bad").unwrap_err();
+        let err: LinterError = json_err.into();
+        match err {
+            LinterError::Json(_) => {}
+            _ => panic!("expected Json variant"),
+        }
+    }
+
+    #[test]
+    fn from_string_conversion() {
+        let err: LinterError = "error message".to_string().into();
+        match err {
+            LinterError::Other(msg) => assert_eq!(msg, "error message"),
+            _ => panic!("expected Other variant"),
+        }
+    }
+
+    #[test]
+    fn from_str_conversion() {
+        let err: LinterError = "error message".into();
+        match err {
+            LinterError::Other(msg) => assert_eq!(msg, "error message"),
+            _ => panic!("expected Other variant"),
+        }
+    }
+
+    #[test]
+    fn error_trait_impl() {
+        let err = LinterError::Other("test".to_string());
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn debug_formatting() {
+        let err = LinterError::Other("test".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Other"));
+    }
+
+    #[test]
+    fn linter_result_ok() {
+        let result: LinterResult<i32> = Ok(42);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn linter_result_err() {
+        let result: LinterResult<i32> = Err(LinterError::Other("fail".to_string()));
+        assert!(result.is_err());
+    }
+}

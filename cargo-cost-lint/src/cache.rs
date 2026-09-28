@@ -293,4 +293,252 @@ mod tests {
 
         assert_ne!(hash1, hash2);
     }
+
+    #[test]
+    fn test_compute_source_hash_ignores_non_target_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("README.md"), "hello").unwrap();
+        fs::write(tmp.path().join("data.txt"), "world").unwrap();
+
+        let hash = compute_source_hash(tmp.path()).unwrap();
+        // Should be the hash of an empty file set (same as empty dir)
+        let tmp2 = tempfile::tempdir().unwrap();
+        let hash2 = compute_source_hash(tmp2.path()).unwrap();
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_compute_source_hash_includes_cargo_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+
+        let hash1 = compute_source_hash(tmp.path()).unwrap();
+
+        fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"foo\"").unwrap();
+        let hash2 = compute_source_hash(tmp.path()).unwrap();
+
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_source_hash_includes_budget_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("budget.toml"), "[lints]").unwrap();
+
+        let hash1 = compute_source_hash(tmp.path()).unwrap();
+
+        fs::write(tmp.path().join("budget.toml"), "[lints]\nfoo = \"bar\"").unwrap();
+        let hash2 = compute_source_hash(tmp.path()).unwrap();
+
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_source_hash_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = compute_source_hash(tmp.path()).unwrap();
+        assert_eq!(hash.len(), 16); // FNV-1a produces 16 hex chars
+    }
+
+    #[test]
+    fn test_get_cache_dir_default() {
+        let dir = get_cache_dir(None);
+        assert!(dir.ends_with("target/cost-lint-cache"));
+    }
+
+    #[test]
+    fn test_get_cache_dir_custom_base() {
+        let base = Path::new("/tmp/custom");
+        let dir = get_cache_dir(Some(base));
+        assert_eq!(dir, PathBuf::from("/tmp/custom/target/cost-lint-cache"));
+    }
+
+    #[test]
+    fn test_get_toolchain_version_returns_string() {
+        // This will either return the actual version or "unknown-toolchain"
+        let version = get_toolchain_version();
+        assert!(!version.is_empty());
+    }
+
+    #[test]
+    fn test_deterministic_hasher_new() {
+        let hasher = DeterministicHasher::new();
+        let hex = hasher.finish_hex();
+        assert_eq!(hex.len(), 16);
+    }
+
+    #[test]
+    fn test_deterministic_hasher_write_str() {
+        let mut h1 = DeterministicHasher::new();
+        h1.write_str("hello");
+
+        let mut h2 = DeterministicHasher::new();
+        h2.write_str("hello");
+
+        assert_eq!(h1.finish_hex(), h2.finish_hex());
+    }
+
+    #[test]
+    fn test_deterministic_hasher_write_bytes() {
+        let mut h1 = DeterministicHasher::new();
+        h1.write_bytes(b"hello");
+
+        let mut h2 = DeterministicHasher::new();
+        h2.write_str("hello");
+
+        assert_eq!(h1.finish_hex(), h2.finish_hex());
+    }
+
+    #[test]
+    fn test_deterministic_hasher_different_inputs() {
+        let mut h1 = DeterministicHasher::new();
+        h1.write_str("hello");
+
+        let mut h2 = DeterministicHasher::new();
+        h2.write_str("world");
+
+        assert_ne!(h1.finish_hex(), h2.finish_hex());
+    }
+
+    #[test]
+    fn test_deterministic_hasher_order_matters() {
+        let mut h1 = DeterministicHasher::new();
+        h1.write_str("ab");
+
+        let mut h2 = DeterministicHasher::new();
+        h2.write_str("ba");
+
+        assert_ne!(h1.finish_hex(), h2.finish_hex());
+    }
+
+    #[test]
+    fn test_cache_key_hash_contains_all_fields() {
+        let key1 = CacheKey {
+            linter_version: "1.0.0".to_string(),
+            toolchain: "tc".to_string(),
+            lint_flags: vec!["-A foo".to_string()],
+            package_args: vec!["--workspace".to_string()],
+            output_format: "text".to_string(),
+            source_hash: "abc".to_string(),
+        };
+        let key2 = CacheKey {
+            linter_version: "1.0.1".to_string(),
+            ..key1.clone()
+        };
+        assert_ne!(key1.compute_hash(), key2.compute_hash());
+    }
+
+    #[test]
+    fn test_cache_save_load_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let key_hash = "testkey123".to_string();
+
+        let entry = CacheEntry {
+            key: key_hash.clone(),
+            exit_code: 42,
+            stdout: "test output".to_string(),
+            stderr: "test error".to_string(),
+        };
+
+        save_cache_entry(&cache_dir, &key_hash, &entry).unwrap();
+        let loaded = load_cache_entry(&cache_dir, &key_hash).unwrap();
+        assert_eq!(loaded, entry);
+    }
+
+    #[test]
+    fn test_cache_save_load_with_empty_strings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let key_hash = "emptykey".to_string();
+
+        let entry = CacheEntry {
+            key: key_hash.clone(),
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+
+        save_cache_entry(&cache_dir, &key_hash, &entry).unwrap();
+        let loaded = load_cache_entry(&cache_dir, &key_hash).unwrap();
+        assert_eq!(loaded, entry);
+    }
+
+    #[test]
+    fn test_clear_cache_removes_non_json_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        // Create a JSON file (should be removed)
+        fs::write(cache_dir.join("entry.json"), "{}").unwrap();
+        // Create a non-JSON file (should be kept)
+        fs::write(cache_dir.join("readme.txt"), "hello").unwrap();
+
+        let count = clear_cache(&cache_dir).unwrap();
+        assert_eq!(count, 1);
+        assert!(!cache_dir.join("entry.json").exists());
+        assert!(cache_dir.join("readme.txt").exists());
+    }
+
+    #[test]
+    fn test_clear_cache_nonexistent_dir() {
+        let dir = Path::new("/nonexistent/path/to/cache");
+        let count = clear_cache(dir).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_load_cache_entry_nonexistent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = load_cache_entry(tmp.path(), "nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_cache_entry_corrupt_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join("corrupt.json"), "not valid json {{{").unwrap();
+
+        let result = load_cache_entry(&cache_dir, "corrupt");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_cache_key_with_empty_fields() {
+        let key = CacheKey {
+            linter_version: String::new(),
+            toolchain: String::new(),
+            lint_flags: vec![],
+            package_args: vec![],
+            output_format: String::new(),
+            source_hash: String::new(),
+        };
+        let hash = key.compute_hash();
+        assert_eq!(hash.len(), 16);
+    }
+
+    #[test]
+    fn test_cache_key_with_many_lint_flags() {
+        let mut key = CacheKey {
+            linter_version: "1.0.0".to_string(),
+            toolchain: "tc".to_string(),
+            lint_flags: vec![],
+            package_args: vec![],
+            output_format: "text".to_string(),
+            source_hash: "abc".to_string(),
+        };
+        let hash1 = key.compute_hash();
+
+        key.lint_flags = vec![
+            "-A foo".to_string(),
+            "-W bar".to_string(),
+            "-D baz".to_string(),
+        ];
+        let hash2 = key.compute_hash();
+
+        assert_ne!(hash1, hash2);
+    }
 }

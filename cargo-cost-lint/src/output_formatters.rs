@@ -563,4 +563,1274 @@ mod tests {
             );
         }
     }
+
+    // --- Additional edge-case tests ---
+
+    #[test]
+    fn test_summary_single_finding() {
+        let findings = vec![LintFinding {
+            name: "lint_a".to_string(),
+            level: "error".to_string(),
+            file: "src/lib.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "msg".to_string(),
+            help: None,
+            suggestion: None,
+        }];
+
+        let mut buf = Vec::new();
+        print_findings_summary(&OutputFormat::Text, &findings, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("Found 1 cost lint finding:"));
+        assert!(output.contains("lint_a: 1"));
+    }
+
+    #[test]
+    fn test_summary_tie_breaking_by_name() {
+        let findings = vec![
+            LintFinding {
+                name: "lint_b".to_string(),
+                level: "warning".to_string(),
+                file: "src/lib.rs".to_string(),
+                span: Span {
+                    line_start: 1,
+                    line_end: 1,
+                    column_start: 1,
+                    column_end: 5,
+                },
+                message: "msg".to_string(),
+                help: None,
+                suggestion: None,
+            },
+            LintFinding {
+                name: "lint_a".to_string(),
+                level: "warning".to_string(),
+                file: "src/lib.rs".to_string(),
+                span: Span {
+                    line_start: 2,
+                    line_end: 2,
+                    column_start: 1,
+                    column_end: 5,
+                },
+                message: "msg".to_string(),
+                help: None,
+                suggestion: None,
+            },
+        ];
+
+        let mut buf = Vec::new();
+        print_findings_summary(&OutputFormat::Text, &findings, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        // Both have count 1, so they should be sorted by name ascending
+        let idx_a = output.find("lint_a: 1").unwrap();
+        let idx_b = output.find("lint_b: 1").unwrap();
+        assert!(idx_a < idx_b, "lint_a should come before lint_b");
+    }
+
+    #[test]
+    fn test_summary_severity_sorting() {
+        let findings = vec![
+            LintFinding {
+                name: "lint_a".to_string(),
+                level: "warning".to_string(),
+                file: "src/lib.rs".to_string(),
+                span: Span {
+                    line_start: 1,
+                    line_end: 1,
+                    column_start: 1,
+                    column_end: 5,
+                },
+                message: "msg".to_string(),
+                help: None,
+                suggestion: None,
+            },
+            LintFinding {
+                name: "lint_b".to_string(),
+                level: "error".to_string(),
+                file: "src/lib.rs".to_string(),
+                span: Span {
+                    line_start: 2,
+                    line_end: 2,
+                    column_start: 1,
+                    column_end: 5,
+                },
+                message: "msg".to_string(),
+                help: None,
+                suggestion: None,
+            },
+        ];
+
+        let mut buf = Vec::new();
+        print_findings_summary(&OutputFormat::Text, &findings, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        // Severities sorted descending alphabetically: "warning" before "error"
+        let idx_error = output.find("error: 1").unwrap();
+        let idx_warning = output.find("warning: 1").unwrap();
+        assert!(idx_warning < idx_error);
+    }
+
+    #[test]
+    fn test_escape_github_message_percent() {
+        assert_eq!(escape_github_message("100%"), "100%25");
+    }
+
+    #[test]
+    fn test_escape_github_message_newline() {
+        assert_eq!(escape_github_message("line1\nline2"), "line1%0Aline2");
+    }
+
+    #[test]
+    fn test_escape_github_message_carriage_return() {
+        assert_eq!(escape_github_message("line1\rline2"), "line1%0Dline2");
+    }
+
+    #[test]
+    fn test_escape_github_message_all_special() {
+        assert_eq!(escape_github_message("100%\r\n"), "100%25%0D%0A");
+    }
+
+    #[test]
+    fn test_escape_github_message_no_special() {
+        assert_eq!(escape_github_message("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_escape_github_property_colon() {
+        assert_eq!(escape_github_property("file.rs:10"), "file.rs%3A10");
+    }
+
+    #[test]
+    fn test_escape_github_property_comma() {
+        assert_eq!(escape_github_property("a,b,c"), "a%2Cb%2Cc");
+    }
+
+    #[test]
+    fn test_escape_github_property_all_special() {
+        assert_eq!(
+            escape_github_property("path:10,20%\r\n"),
+            "path%3A10%2C20%25%0D%0A"
+        );
+    }
+
+    #[test]
+    fn test_format_github_annotation_error_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let ann = format_github_annotation(&finding);
+        assert!(ann.starts_with("::error file="));
+        assert!(ann.contains("line=10"));
+        assert!(ann.contains("col=5"));
+        assert!(ann.contains("::test message"));
+    }
+
+    #[test]
+    fn test_format_github_annotation_deny_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "deny".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let ann = format_github_annotation(&finding);
+        assert!(ann.starts_with("::error file="));
+    }
+
+    #[test]
+    fn test_format_github_annotation_warning_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "warning".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let ann = format_github_annotation(&finding);
+        assert!(ann.starts_with("::warning file="));
+    }
+
+    #[test]
+    fn test_format_github_annotation_no_line() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 0,
+                line_end: 0,
+                column_start: 0,
+                column_end: 0,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let ann = format_github_annotation(&finding);
+        assert!(ann.starts_with("::error file="));
+        assert!(!ann.contains("line="));
+    }
+
+    #[test]
+    fn test_format_github_annotation_no_file() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: String::new(),
+            span: Span {
+                line_start: 0,
+                line_end: 0,
+                column_start: 0,
+                column_end: 0,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let ann = format_github_annotation(&finding);
+        assert!(ann.starts_with("::error::"));
+    }
+
+    #[test]
+    fn test_format_github_annotation_escapes_message() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "100% failure\n".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let ann = format_github_annotation(&finding);
+        assert!(ann.contains("100%25 failure%0A"));
+    }
+
+    #[test]
+    fn test_emit_github_annotation_writes_to_writer() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "test".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let mut buf = Vec::new();
+        emit_github_annotation(&finding, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.starts_with("::error file="));
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_format_diagnostic_error_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("error: [test_lint] test message"));
+        assert!(output.contains("src/main.rs:10:5"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_deny_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "deny".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("error: [test_lint]"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_warning_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "warning".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("warning: [test_lint]"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_warn_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "warn".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("warning: [test_lint]"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_note_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "note".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("note: [test_lint]"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_unknown_level() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "something".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("note: [test_lint]"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_no_file() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: String::new(),
+            span: Span {
+                line_start: 0,
+                line_end: 0,
+                column_start: 0,
+                column_end: 0,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("unknown location"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_file_no_line() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 0,
+                line_end: 0,
+                column_start: 0,
+                column_end: 0,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("src/main.rs"));
+        assert!(!output.contains("src/main.rs:0"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_with_help() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: Some("try this instead".to_string()),
+            suggestion: None,
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("= help: try this instead"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_with_suggestion() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: Some("use a different approach".to_string()),
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("= suggestion: use a different approach"));
+    }
+
+    #[test]
+    fn test_format_diagnostic_with_help_and_suggestion() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: Some("help text".to_string()),
+            suggestion: Some("suggestion text".to_string()),
+        };
+        let output = format_diagnostic(&finding);
+        assert!(output.contains("= help: help text"));
+        assert!(output.contains("= suggestion: suggestion text"));
+    }
+
+    #[test]
+    fn test_generate_sarif_report_empty() {
+        let report = generate_sarif_report(&[]);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(value["version"], "2.1.0");
+        assert_eq!(value["runs"][0]["results"].as_array().unwrap().len(), 0);
+        assert!(value["runs"][0]["tool"]["driver"].get("rules").is_none());
+    }
+
+    #[test]
+    fn test_generate_sarif_report_single_finding() {
+        let findings = vec![LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        }];
+
+        let report = generate_sarif_report(&findings);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(value["version"], "2.1.0");
+        assert_eq!(value["runs"][0]["results"].as_array().unwrap().len(), 1);
+        assert_eq!(value["runs"][0]["results"][0]["ruleId"], "test_lint");
+        assert_eq!(value["runs"][0]["results"][0]["level"], "error");
+        assert_eq!(
+            value["runs"][0]["results"][0]["message"]["text"],
+            "test message"
+        );
+        assert_eq!(
+            value["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            value["runs"][0]["tool"]["driver"]["rules"][0]["id"],
+            "test_lint"
+        );
+    }
+
+    #[test]
+    fn test_generate_sarif_report_multiple_findings_same_rule() {
+        let findings = vec![
+            LintFinding {
+                name: "test_lint".to_string(),
+                level: "error".to_string(),
+                file: "src/main.rs".to_string(),
+                span: Span {
+                    line_start: 10,
+                    line_end: 12,
+                    column_start: 5,
+                    column_end: 15,
+                },
+                message: "msg1".to_string(),
+                help: None,
+                suggestion: None,
+            },
+            LintFinding {
+                name: "test_lint".to_string(),
+                level: "warning".to_string(),
+                file: "src/lib.rs".to_string(),
+                span: Span {
+                    line_start: 20,
+                    line_end: 22,
+                    column_start: 3,
+                    column_end: 10,
+                },
+                message: "msg2".to_string(),
+                help: None,
+                suggestion: None,
+            },
+        ];
+
+        let report = generate_sarif_report(&findings);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(value["runs"][0]["results"].as_array().unwrap().len(), 2);
+        // Rules should be deduplicated
+        assert_eq!(
+            value["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_generate_sarif_report_deny_level_maps_to_error() {
+        let findings = vec![LintFinding {
+            name: "test_lint".to_string(),
+            level: "deny".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        }];
+
+        let report = generate_sarif_report(&findings);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(value["runs"][0]["results"][0]["level"], "error");
+    }
+
+    #[test]
+    fn test_generate_sarif_report_warn_level_maps_to_warning() {
+        let findings = vec![LintFinding {
+            name: "test_lint".to_string(),
+            level: "warn".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        }];
+
+        let report = generate_sarif_report(&findings);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(value["runs"][0]["results"][0]["level"], "warning");
+    }
+
+    #[test]
+    fn test_generate_sarif_report_unknown_level_maps_to_note() {
+        let findings = vec![LintFinding {
+            name: "test_lint".to_string(),
+            level: "info".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        }];
+
+        let report = generate_sarif_report(&findings);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(value["runs"][0]["results"][0]["level"], "note");
+    }
+
+    #[test]
+    fn test_generate_sarif_report_no_span() {
+        let findings = vec![LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 0,
+                line_end: 0,
+                column_start: 0,
+                column_end: 0,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        }];
+
+        let report = generate_sarif_report(&findings);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        let region = &value["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"];
+        assert!(region.is_null(), "region should be null when span is zero");
+    }
+
+    #[test]
+    fn test_generate_sarif_report_with_span() {
+        let findings = vec![LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        }];
+
+        let report = generate_sarif_report(&findings);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        let region = &value["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"];
+        assert_eq!(region["startLine"], 10);
+        assert_eq!(region["startColumn"], 5);
+        assert_eq!(region["endLine"], 12);
+        assert_eq!(region["endColumn"], 15);
+    }
+
+    #[test]
+    fn test_generate_sarif_report_schema_url() {
+        let report = generate_sarif_report(&[]);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert!(value["$schema"].as_str().unwrap().contains("sarif-2.1.0"));
+    }
+
+    #[test]
+    fn test_generate_sarif_report_tool_name() {
+        let report = generate_sarif_report(&[]);
+        let value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(
+            value["runs"][0]["tool"]["driver"]["name"],
+            "cargo-cost-lint"
+        );
+    }
+
+    #[test]
+    fn test_handle_finding_json_format() {
+        let cli = crate::Cli {
+            config: None,
+            list_lints: false,
+            explain: None,
+            format: OutputFormat::Json,
+            quiet: false,
+            verbose: false,
+            allow: vec![],
+            warn: vec![],
+            deny: vec![],
+            package: vec![],
+            workspace: false,
+            no_cache: false,
+            clear_cache: false,
+            color: crate::ColorChoice::Auto,
+            diff_only: false,
+        };
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "test".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let mut acc = Vec::new();
+        let mut buf = Vec::new();
+        handle_finding(&cli, &finding, &mut acc, &mut buf).unwrap();
+        assert_eq!(acc.len(), 1);
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("\"name\":\"test_lint\""));
+    }
+
+    #[test]
+    fn test_handle_finding_github_format() {
+        let cli = crate::Cli {
+            config: None,
+            list_lints: false,
+            explain: None,
+            format: OutputFormat::Github,
+            quiet: false,
+            verbose: false,
+            allow: vec![],
+            warn: vec![],
+            deny: vec![],
+            package: vec![],
+            workspace: false,
+            no_cache: false,
+            clear_cache: false,
+            color: crate::ColorChoice::Auto,
+            diff_only: false,
+        };
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "test".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let mut acc = Vec::new();
+        let mut buf = Vec::new();
+        handle_finding(&cli, &finding, &mut acc, &mut buf).unwrap();
+        assert_eq!(acc.len(), 1);
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.starts_with("::error file="));
+    }
+
+    #[test]
+    fn test_handle_finding_text_format() {
+        let cli = crate::Cli {
+            config: None,
+            list_lints: false,
+            explain: None,
+            format: OutputFormat::Text,
+            quiet: false,
+            verbose: false,
+            allow: vec![],
+            warn: vec![],
+            deny: vec![],
+            package: vec![],
+            workspace: false,
+            no_cache: false,
+            clear_cache: false,
+            color: crate::ColorChoice::Auto,
+            diff_only: false,
+        };
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "test".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let mut acc = Vec::new();
+        let mut buf = Vec::new();
+        handle_finding(&cli, &finding, &mut acc, &mut buf).unwrap();
+        assert_eq!(acc.len(), 1);
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("error: [test_lint]"));
+    }
+
+    #[test]
+    fn test_handle_finding_sarif_format() {
+        let cli = crate::Cli {
+            config: None,
+            list_lints: false,
+            explain: None,
+            format: OutputFormat::Sarif,
+            quiet: false,
+            verbose: false,
+            allow: vec![],
+            warn: vec![],
+            deny: vec![],
+            package: vec![],
+            workspace: false,
+            no_cache: false,
+            clear_cache: false,
+            color: crate::ColorChoice::Auto,
+            diff_only: false,
+        };
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "test".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let mut acc = Vec::new();
+        let mut buf = Vec::new();
+        handle_finding(&cli, &finding, &mut acc, &mut buf).unwrap();
+        assert_eq!(acc.len(), 1);
+        // SARIF format should not write to the writer
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_handle_finding_accumulates_multiple() {
+        let cli = crate::Cli {
+            config: None,
+            list_lints: false,
+            explain: None,
+            format: OutputFormat::Sarif,
+            quiet: false,
+            verbose: false,
+            allow: vec![],
+            warn: vec![],
+            deny: vec![],
+            package: vec![],
+            workspace: false,
+            no_cache: false,
+            clear_cache: false,
+            color: crate::ColorChoice::Auto,
+            diff_only: false,
+        };
+        let finding1 = LintFinding {
+            name: "lint_a".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "test1".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let finding2 = LintFinding {
+            name: "lint_b".to_string(),
+            level: "warning".to_string(),
+            file: "src/lib.rs".to_string(),
+            span: Span {
+                line_start: 2,
+                line_end: 2,
+                column_start: 1,
+                column_end: 5,
+            },
+            message: "test2".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let mut acc = Vec::new();
+        let mut buf = Vec::new();
+        handle_finding(&cli, &finding1, &mut acc, &mut buf).unwrap();
+        handle_finding(&cli, &finding2, &mut acc, &mut buf).unwrap();
+        assert_eq!(acc.len(), 2);
+        assert_eq!(acc[0].name, "lint_a");
+        assert_eq!(acc[1].name, "lint_b");
+    }
+
+    #[test]
+    fn test_lint_finding_serialization() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: Some("help text".to_string()),
+            suggestion: Some("suggestion text".to_string()),
+        };
+        let json = serde_json::to_string(&finding).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["name"], "test_lint");
+        assert_eq!(value["level"], "error");
+        assert_eq!(value["file"], "src/main.rs");
+        assert_eq!(value["span"]["line_start"], 10);
+        assert_eq!(value["span"]["line_end"], 12);
+        assert_eq!(value["span"]["column_start"], 5);
+        assert_eq!(value["span"]["column_end"], 15);
+        assert_eq!(value["message"], "test message");
+        assert_eq!(value["help"], "help text");
+        assert_eq!(value["suggestion"], "suggestion text");
+    }
+
+    #[test]
+    fn test_lint_finding_serialization_skips_none_fields() {
+        let finding = LintFinding {
+            name: "test_lint".to_string(),
+            level: "error".to_string(),
+            file: "src/main.rs".to_string(),
+            span: Span {
+                line_start: 10,
+                line_end: 12,
+                column_start: 5,
+                column_end: 15,
+            },
+            message: "test message".to_string(),
+            help: None,
+            suggestion: None,
+        };
+        let json = serde_json::to_string(&finding).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            value.get("help").is_none(),
+            "help should be skipped when None"
+        );
+        assert!(
+            value.get("suggestion").is_none(),
+            "suggestion should be skipped when None"
+        );
+    }
+
+    #[test]
+    fn test_output_format_value_enum() {
+        // Verify all variants exist and are distinct
+        let formats = [
+            OutputFormat::Text,
+            OutputFormat::Json,
+            OutputFormat::Sarif,
+            OutputFormat::Github,
+        ];
+        for (i, f1) in formats.iter().enumerate() {
+            for (j, f2) in formats.iter().enumerate() {
+                if i == j {
+                    assert_eq!(f1, f2);
+                } else {
+                    assert_ne!(f1, f2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_span_serialization() {
+        let span = Span {
+            line_start: 1,
+            line_end: 2,
+            column_start: 3,
+            column_end: 4,
+        };
+        let json = serde_json::to_string(&span).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["line_start"], 1);
+        assert_eq!(value["line_end"], 2);
+        assert_eq!(value["column_start"], 3);
+        assert_eq!(value["column_end"], 4);
+    }
+
+    #[test]
+    fn test_sarif_report_serialization() {
+        let report = SarifReport {
+            schema: "test".to_string(),
+            version: "2.1.0".to_string(),
+            runs: vec![],
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["$schema"], "test");
+        assert_eq!(value["version"], "2.1.0");
+    }
+
+    #[test]
+    fn test_sarif_tool_driver_serialization() {
+        let driver = SarifToolDriver {
+            name: "test".to_string(),
+            version: "1.0".to_string(),
+            information_uri: Some("https://example.com".to_string()),
+            rules: vec![],
+        };
+        let json = serde_json::to_string(&driver).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["name"], "test");
+        assert_eq!(value["version"], "1.0");
+        assert_eq!(value["informationUri"], "https://example.com");
+    }
+
+    #[test]
+    fn test_sarif_tool_driver_skips_empty_rules() {
+        let driver = SarifToolDriver {
+            name: "test".to_string(),
+            version: "1.0".to_string(),
+            information_uri: None,
+            rules: vec![],
+        };
+        let json = serde_json::to_string(&driver).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("rules").is_none());
+        assert!(value.get("informationUri").is_none());
+    }
+
+    #[test]
+    fn test_sarif_region_serialization() {
+        let region = SarifRegion {
+            start_line: 10,
+            start_column: Some(5),
+            end_line: Some(12),
+            end_column: Some(15),
+        };
+        let json = serde_json::to_string(&region).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["startLine"], 10);
+        assert_eq!(value["startColumn"], 5);
+        assert_eq!(value["endLine"], 12);
+        assert_eq!(value["endColumn"], 15);
+    }
+
+    #[test]
+    fn test_sarif_region_skips_none_fields() {
+        let region = SarifRegion {
+            start_line: 10,
+            start_column: None,
+            end_line: None,
+            end_column: None,
+        };
+        let json = serde_json::to_string(&region).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["startLine"], 10);
+        assert!(value.get("startColumn").is_none());
+        assert!(value.get("endLine").is_none());
+        assert!(value.get("endColumn").is_none());
+    }
+
+    #[test]
+    fn test_sarif_result_serialization() {
+        let result = SarifResult {
+            rule_id: "test_lint".to_string(),
+            level: "error".to_string(),
+            message: SarifMessage {
+                text: "test message".to_string(),
+            },
+            locations: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["ruleId"], "test_lint");
+        assert_eq!(value["level"], "error");
+        assert_eq!(value["message"]["text"], "test message");
+    }
+
+    #[test]
+    fn test_sarif_rule_serialization() {
+        let rule = SarifRule {
+            id: "test_lint".to_string(),
+            short_description: SarifRuleShortDescription {
+                text: "Test lint".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["id"], "test_lint");
+        assert_eq!(value["shortDescription"]["text"], "Test lint");
+    }
+
+    #[test]
+    fn test_sarif_location_serialization() {
+        let location = SarifLocation {
+            physical_location: SarifPhysicalLocation {
+                artifact_location: SarifArtifactLocation {
+                    uri: "file:///test.rs".to_string(),
+                },
+                region: None,
+            },
+        };
+        let json = serde_json::to_string(&location).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["physicalLocation"]["artifactLocation"]["uri"],
+            "file:///test.rs"
+        );
+        assert!(value["physicalLocation"].get("region").is_none());
+    }
+
+    #[test]
+    fn test_sarif_physical_location_with_region() {
+        let location = SarifPhysicalLocation {
+            artifact_location: SarifArtifactLocation {
+                uri: "file:///test.rs".to_string(),
+            },
+            region: Some(SarifRegion {
+                start_line: 1,
+                start_column: Some(1),
+                end_line: Some(2),
+                end_column: Some(2),
+            }),
+        };
+        let json = serde_json::to_string(&location).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["region"]["startLine"], 1);
+    }
+
+    #[test]
+    fn test_sarif_run_serialization() {
+        let run = SarifRun {
+            tool: SarifTool {
+                driver: SarifToolDriver {
+                    name: "test".to_string(),
+                    version: "1.0".to_string(),
+                    information_uri: None,
+                    rules: vec![],
+                },
+            },
+            results: vec![],
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["tool"]["driver"]["name"], "test");
+        assert!(value["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_sarif_message_serialization() {
+        let msg = SarifMessage {
+            text: "test".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["text"], "test");
+    }
+
+    #[test]
+    fn test_sarif_artifact_location_serialization() {
+        let loc = SarifArtifactLocation {
+            uri: "file:///test.rs".to_string(),
+        };
+        let json = serde_json::to_string(&loc).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["uri"], "file:///test.rs");
+    }
+
+    #[test]
+    fn test_sarif_rule_short_description_serialization() {
+        let desc = SarifRuleShortDescription {
+            text: "Test".to_string(),
+        };
+        let json = serde_json::to_string(&desc).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["text"], "Test");
+    }
+
+    #[test]
+    fn test_sarif_tool_serialization() {
+        let tool = SarifTool {
+            driver: SarifToolDriver {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+                information_uri: None,
+                rules: vec![],
+            },
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["driver"]["name"], "test");
+    }
 }

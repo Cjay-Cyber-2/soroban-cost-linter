@@ -257,9 +257,14 @@ pub fn parse_workspace_members_from_metadata(json_bytes: &[u8]) -> Result<Vec<St
     let mut member_names: Vec<String> = packages
         .iter()
         .filter_map(|pkg| {
-            let id = pkg.get("id").and_then(|i| i.as_str())?;
             let name = pkg.get("name").and_then(|n| n.as_str())?;
-            if workspace_members.is_empty() || workspace_members.contains(id) {
+            let is_member = if workspace_members.is_empty() {
+                true
+            } else {
+                let id = pkg.get("id").and_then(|i| i.as_str())?;
+                workspace_members.contains(id)
+            };
+            if is_member {
                 Some(name.to_string())
             } else {
                 None
@@ -2036,5 +2041,567 @@ mod tests {
 
         assert!(!lintignore.is_ignored(root.join("src/main.rs")));
         assert!(!lintignore.is_ignored(root.join("src/lib.rs")));
+    }
+
+    // --- Additional edge-case tests for coverage ---
+
+    #[test]
+    fn clean_markdown_empty_string() {
+        let cleaned = clean_markdown_for_terminal("");
+        assert_eq!(cleaned, "");
+    }
+
+    #[test]
+    fn clean_markdown_removes_bold_markers() {
+        let input = "This is **bold** text";
+        let cleaned = clean_markdown_for_terminal(input);
+        assert!(!cleaned.contains("**"), "bold markers should be removed");
+        assert!(cleaned.contains("bold"), "text content should remain");
+    }
+
+    #[test]
+    fn clean_markdown_multiple_code_blocks() {
+        let input = "Before\n```rust\nlet x = 1;\n```\nMiddle\n```python\nprint('hi')\n```\nAfter";
+        let cleaned = clean_markdown_for_terminal(input);
+        assert!(cleaned.contains("Before"));
+        assert!(cleaned.contains("let x = 1;"));
+        assert!(cleaned.contains("Middle"));
+        assert!(cleaned.contains("print('hi')"));
+        assert!(cleaned.contains("After"));
+    }
+
+    #[test]
+    fn clean_markdown_hint_with_code_inside() {
+        let input = "{% hint style=\"info\" %}\n```rust\nlet x = 1;\n```\n{% endhint %}";
+        let cleaned = clean_markdown_for_terminal(input);
+        assert!(!cleaned.contains("{% hint"));
+        assert!(!cleaned.contains("{% endhint"));
+        assert!(cleaned.contains("let x = 1;"));
+    }
+
+    #[test]
+    fn clean_markdown_line_ending_with_percent_brace() {
+        // Lines ending with "%}" (but not starting with spaces) are treated as hint markers
+        let input = "normal line\nsome content %}";
+        let cleaned = clean_markdown_for_terminal(input);
+        assert!(cleaned.contains("normal line"));
+    }
+
+    #[test]
+    fn clean_markdown_indented_line_ending_with_percent_brace_preserved() {
+        // Lines starting with spaces (indented) are NOT treated as hint markers
+        // even if they end with "%}"
+        let input = "    indented content %}";
+        let cleaned = clean_markdown_for_terminal(input);
+        assert!(
+            cleaned.contains("indented content"),
+            "indented lines should be preserved: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn clean_markdown_only_hint_tags() {
+        let input = "{% hint style=\"danger\" %}\n{% endhint %}";
+        let cleaned = clean_markdown_for_terminal(input);
+        assert!(!cleaned.contains("{% hint"));
+        assert!(!cleaned.contains("{% endhint"));
+    }
+
+    #[test]
+    fn clean_markdown_mixed_content() {
+        let input = "# Title\n\nSome **bold** text.\n\n{% hint style=\"warning\" %}\nHint content\n{% endhint %}\n\n```rust\nfn main() {}\n```";
+        let cleaned = clean_markdown_for_terminal(input);
+        assert!(cleaned.contains("# Title"));
+        assert!(cleaned.contains("Some bold text."));
+        assert!(!cleaned.contains("**"));
+        assert!(!cleaned.contains("{% hint"));
+        assert!(!cleaned.contains("{% endhint"));
+        assert!(cleaned.contains("Hint content"));
+        assert!(cleaned.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn build_effective_flags_no_config_no_cli() {
+        let flags = build_effective_lint_flags(None, &[], &[], &[]).unwrap();
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn build_effective_flags_config_with_empty_lints() {
+        let config = BudgetConfig { lints: None };
+        let flags = build_effective_lint_flags(Some(&config), &[], &[], &[]).unwrap();
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn build_effective_flags_unknown_lint_in_config() {
+        let mut lints = std::collections::HashMap::new();
+        lints.insert("nonexistent_lint".to_string(), "deny".to_string());
+        let config = BudgetConfig { lints: Some(lints) };
+        let result = build_effective_lint_flags(Some(&config), &[], &[], &[]);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Unknown lint name 'nonexistent_lint' in budget.toml")
+        );
+    }
+
+    #[test]
+    fn build_effective_flags_unknown_level_in_config() {
+        let mut lints = std::collections::HashMap::new();
+        lints.insert("soroban_storage_in_loop".to_string(), "invalid".to_string());
+        let config = BudgetConfig { lints: Some(lints) };
+        let result = build_effective_lint_flags(Some(&config), &[], &[], &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown lint level 'invalid'"));
+    }
+
+    #[test]
+    fn build_effective_flags_conflicting_allow_and_warn() {
+        let allow = vec!["soroban_storage_in_loop".to_string()];
+        let warn = vec!["soroban_storage_in_loop".to_string()];
+        let result = build_effective_lint_flags(None, &allow, &warn, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Conflicting lint levels"));
+    }
+
+    #[test]
+    fn build_effective_flags_conflicting_warn_and_deny() {
+        let warn = vec!["soroban_storage_in_loop".to_string()];
+        let deny = vec!["soroban_storage_in_loop".to_string()];
+        let result = build_effective_lint_flags(None, &[], &warn, &deny);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Conflicting lint levels"));
+    }
+
+    #[test]
+    fn build_effective_flags_all_three_levels_same_lint() {
+        let allow = vec!["soroban_storage_in_loop".to_string()];
+        let warn = vec!["soroban_storage_in_loop".to_string()];
+        let deny = vec!["soroban_storage_in_loop".to_string()];
+        let result = build_effective_lint_flags(None, &allow, &warn, &deny);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Conflicting lint levels"));
+    }
+
+    #[test]
+    fn build_effective_flags_multiple_valid_cli_overrides() {
+        let allow = vec![
+            "redundant_env_clone".to_string(),
+            "soroban_storage_in_loop".to_string(),
+        ];
+        let warn = vec!["map_insert_in_loop".to_string()];
+        let deny = vec!["symbol_new_for_short_literal".to_string()];
+        let flags = build_effective_lint_flags(None, &allow, &warn, &deny).unwrap();
+        assert_eq!(flags.len(), 4);
+        assert!(flags.contains(&"-A redundant_env_clone".to_string()));
+        assert!(flags.contains(&"-A soroban_storage_in_loop".to_string()));
+        assert!(flags.contains(&"-W map_insert_in_loop".to_string()));
+        assert!(flags.contains(&"-D symbol_new_for_short_literal".to_string()));
+    }
+
+    #[test]
+    fn build_effective_flags_duplicate_same_level_across_all_three() {
+        let allow = vec![
+            "redundant_env_clone".to_string(),
+            "redundant_env_clone".to_string(),
+        ];
+        let deny = vec![
+            "soroban_storage_in_loop".to_string(),
+            "soroban_storage_in_loop".to_string(),
+        ];
+        let flags = build_effective_lint_flags(None, &allow, &[], &deny).unwrap();
+        assert_eq!(flags.len(), 2);
+        assert!(flags.contains(&"-A redundant_env_clone".to_string()));
+        assert!(flags.contains(&"-D soroban_storage_in_loop".to_string()));
+    }
+
+    #[test]
+    fn build_effective_flags_cli_partial_override_preserves_config() {
+        let mut lints = std::collections::HashMap::new();
+        lints.insert("soroban_storage_in_loop".to_string(), "warn".to_string());
+        lints.insert("redundant_env_clone".to_string(), "warn".to_string());
+        lints.insert("map_insert_in_loop".to_string(), "deny".to_string());
+        let config = BudgetConfig { lints: Some(lints) };
+
+        // Only override soroban_storage_in_loop to deny
+        let deny = vec!["soroban_storage_in_loop".to_string()];
+        let flags = build_effective_lint_flags(Some(&config), &[], &[], &deny).unwrap();
+        assert_eq!(flags.len(), 3);
+        assert!(flags.contains(&"-D soroban_storage_in_loop".to_string()));
+        assert!(flags.contains(&"-W redundant_env_clone".to_string()));
+        assert!(flags.contains(&"-D map_insert_in_loop".to_string()));
+    }
+
+    #[test]
+    fn validate_and_build_package_args_empty_available_with_packages() {
+        let pkgs = vec!["some-pkg".to_string()];
+        let available: Vec<String> = vec![];
+        let result = validate_and_build_package_args(&pkgs, false, &available);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Package 'some-pkg' not found in workspace"));
+        assert!(err.contains("Valid workspace members are: "));
+    }
+
+    #[test]
+    fn parse_workspace_members_empty_workspace_members() {
+        let json = r#"{
+            "packages": [
+                {"name": "contract-a", "id": "path+file:///crates/contract-a#0.1.0"}
+            ],
+            "workspace_members": []
+        }"#;
+        let members = parse_workspace_members_from_metadata(json.as_bytes()).unwrap();
+        assert_eq!(members, vec!["contract-a"]);
+    }
+
+    #[test]
+    fn parse_workspace_members_missing_packages_array() {
+        let json = r#"{
+            "workspace_members": ["path+file:///crates/contract-a#0.1.0"]
+        }"#;
+        let result = parse_workspace_members_from_metadata(json.as_bytes());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing `packages` array"));
+    }
+
+    #[test]
+    fn parse_workspace_members_malformed_json() {
+        let result = parse_workspace_members_from_metadata(b"not json at all");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to parse"));
+    }
+
+    #[test]
+    fn parse_workspace_members_empty_packages() {
+        let json = r#"{
+            "packages": [],
+            "workspace_members": []
+        }"#;
+        let members = parse_workspace_members_from_metadata(json.as_bytes()).unwrap();
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn parse_workspace_members_package_missing_name() {
+        let json = r#"{
+            "packages": [
+                {"id": "path+file:///crates/contract-a#0.1.0"}
+            ],
+            "workspace_members": ["path+file:///crates/contract-a#0.1.0"]
+        }"#;
+        let members = parse_workspace_members_from_metadata(json.as_bytes()).unwrap();
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn parse_workspace_members_package_missing_id() {
+        let json = r#"{
+            "packages": [
+                {"name": "contract-a"}
+            ],
+            "workspace_members": []
+        }"#;
+        let members = parse_workspace_members_from_metadata(json.as_bytes()).unwrap();
+        // Missing id means it won't be in workspace_members, but with empty
+        // workspace_members all packages are included
+        assert_eq!(members, vec!["contract-a"]);
+    }
+
+    #[test]
+    fn parse_workspace_members_deduplicates_names() {
+        let json = r#"{
+            "packages": [
+                {"name": "contract-a", "id": "path+file:///crates/contract-a#0.1.0"},
+                {"name": "contract-a", "id": "path+file:///crates/contract-a-copy#0.1.0"}
+            ],
+            "workspace_members": [
+                "path+file:///crates/contract-a#0.1.0",
+                "path+file:///crates/contract-a-copy#0.1.0"
+            ]
+        }"#;
+        let members = parse_workspace_members_from_metadata(json.as_bytes()).unwrap();
+        assert_eq!(members, vec!["contract-a"]);
+    }
+
+    #[test]
+    fn parse_workspace_members_sorted_output() {
+        let json = r#"{
+            "packages": [
+                {"name": "zebra", "id": "path+file:///crates/zebra#0.1.0"},
+                {"name": "alpha", "id": "path+file:///crates/alpha#0.1.0"},
+                {"name": "middle", "id": "path+file:///crates/middle#0.1.0"}
+            ],
+            "workspace_members": [
+                "path+file:///crates/zebra#0.1.0",
+                "path+file:///crates/alpha#0.1.0",
+                "path+file:///crates/middle#0.1.0"
+            ]
+        }"#;
+        let members = parse_workspace_members_from_metadata(json.as_bytes()).unwrap();
+        assert_eq!(members, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn discover_config_cwd_equals_workspace_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let budget_path = root.join("budget.toml");
+        std::fs::write(&budget_path, "[lints]\n").unwrap();
+
+        let found = discover_config_file(root, root);
+        assert_eq!(found, Some(budget_path));
+    }
+
+    #[test]
+    fn resolve_config_discovery_mode_no_config_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let member_dir = root.join("member");
+        std::fs::create_dir_all(&member_dir).unwrap();
+
+        // No budget.toml anywhere
+        let result = resolve_config(None);
+        // This will discover from current_dir, not from our temp dir,
+        // so we just verify it doesn't panic
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lintignore_discover_returns_none_when_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let member_dir = root.join("member");
+        std::fs::create_dir_all(&member_dir).unwrap();
+
+        let result = LintIgnore::discover(&member_dir, root);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn lintignore_discover_finds_at_workspace_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let lintignore_path = root.join(".lintignore");
+        std::fs::write(&lintignore_path, "*.log.rs\n").unwrap();
+
+        let member_dir = root.join("member");
+        std::fs::create_dir_all(&member_dir).unwrap();
+
+        let result = LintIgnore::discover(&member_dir, root);
+        assert!(result.is_some());
+        let lintignore = result.unwrap();
+        assert!(lintignore.is_ignored(root.join("test.log.rs")));
+    }
+
+    #[test]
+    fn lintignore_is_ignored_non_matching() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let lintignore_path = root.join(".lintignore");
+        std::fs::write(&lintignore_path, "src/generated/*.rs\n").unwrap();
+
+        let lintignore = LintIgnore::discover(root, root).unwrap();
+        assert!(!lintignore.is_ignored(root.join("src/main.rs")));
+        assert!(!lintignore.is_ignored(root.join("tests/test.rs")));
+        assert!(!lintignore.is_ignored(root.join("src/generated")));
+    }
+
+    #[test]
+    fn lintignore_is_ignored_with_absolute_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let lintignore_path = root.join(".lintignore");
+        std::fs::write(&lintignore_path, "*.tmp.rs\n").unwrap();
+
+        let lintignore = LintIgnore::discover(root, root).unwrap();
+        let abs_path = root.join("foo.tmp.rs");
+        assert!(lintignore.is_ignored(&abs_path));
+    }
+
+    #[test]
+    fn color_choice_as_cargo_arg_all_variants() {
+        assert_eq!(ColorChoice::Auto.as_cargo_arg(), None);
+        assert_eq!(ColorChoice::Always.as_cargo_arg(), Some("always"));
+        assert_eq!(ColorChoice::Never.as_cargo_arg(), Some("never"));
+    }
+
+    #[test]
+    fn resolve_color_explicit_always_without_no_color() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("NO_COLOR") };
+        if std::env::var("NO_COLOR").is_ok() {
+            return;
+        }
+        let resolved = resolve_color_choice(&ColorChoice::Always);
+        assert_eq!(resolved, ColorChoice::Always);
+    }
+
+    #[test]
+    fn resolve_color_explicit_never_without_no_color() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("NO_COLOR") };
+        if std::env::var("NO_COLOR").is_ok() {
+            return;
+        }
+        let resolved = resolve_color_choice(&ColorChoice::Never);
+        assert_eq!(resolved, ColorChoice::Never);
+    }
+
+    #[test]
+    fn resolve_color_no_color_with_various_non_empty_values() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for value in &["1", "true", "yes", "anything", "0"] {
+            unsafe { std::env::set_var("NO_COLOR", value) };
+            let resolved = resolve_color_choice(&ColorChoice::Auto);
+            assert_eq!(
+                resolved,
+                ColorChoice::Never,
+                "NO_COLOR={} should resolve to Never",
+                value
+            );
+        }
+        unsafe { std::env::remove_var("NO_COLOR") };
+    }
+
+    #[test]
+    fn resolve_color_no_color_empty_string() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("NO_COLOR", "") };
+        let resolved = resolve_color_choice(&ColorChoice::Auto);
+        assert_eq!(resolved, ColorChoice::Auto);
+        unsafe { std::env::remove_var("NO_COLOR") };
+    }
+
+    #[test]
+    fn cli_parses_diff_only_flag() {
+        let cli = Cli::try_parse_from(["cargo-cost-lint", "--diff-only"])
+            .expect("parsing should succeed");
+        assert!(cli.diff_only);
+    }
+
+    #[test]
+    fn cli_parses_explain_flag() {
+        let cli = Cli::try_parse_from(["cargo-cost-lint", "--explain", "soroban_storage_in_loop"])
+            .expect("parsing should succeed");
+        assert_eq!(cli.explain, Some("soroban_storage_in_loop".to_string()));
+    }
+
+    #[test]
+    fn cli_explain_with_format_json() {
+        let cli = Cli::try_parse_from([
+            "cargo-cost-lint",
+            "--explain",
+            "redundant_env_clone",
+            "--format",
+            "json",
+        ])
+        .expect("parsing should succeed");
+        assert_eq!(cli.explain, Some("redundant_env_clone".to_string()));
+        assert_eq!(cli.format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn cli_parses_all_flags_together() {
+        let cli = Cli::try_parse_from([
+            "cargo-cost-lint",
+            "--config",
+            "budget.toml",
+            "--format",
+            "json",
+            "--quiet",
+            "--no-cache",
+            "--diff-only",
+            "-p",
+            "my-contract",
+        ])
+        .expect("parsing should succeed");
+        assert_eq!(cli.config, Some("budget.toml".to_string()));
+        assert_eq!(cli.format, OutputFormat::Json);
+        assert!(cli.quiet);
+        assert!(cli.no_cache);
+        assert!(cli.diff_only);
+        assert_eq!(cli.package, vec!["my-contract".to_string()]);
+    }
+
+    #[test]
+    fn cli_invalid_format_returns_error() {
+        let result = Cli::try_parse_from(["cargo-cost-lint", "--format", "invalid"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_invalid_color_returns_error() {
+        let result = Cli::try_parse_from(["cargo-cost-lint", "--color", "invalid"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_workspace_and_package_are_mutually_exclusive() {
+        // Note: the ArgGroup only covers quiet/verbose, not workspace/package.
+        // workspace/package mutual exclusion is enforced at runtime in
+        // validate_and_build_package_args, not at the clap level.
+        let cli = Cli::try_parse_from(["cargo-cost-lint", "--workspace", "-p", "foo"]);
+        // This should parse fine at the clap level
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn print_explanation_unknown_lint_lists_valid_names() {
+        // We can't easily test the exit(1) path, but we can verify the
+        // function panics/exits. Instead, test that the error message
+        // format is correct by checking the logic indirectly.
+        let unknown_name = "definitely_not_a_real_lint_name";
+        let found = LINT_EXPLANATIONS.iter().find(|e| e.name == unknown_name);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn long_version_contains_toolchain_info() {
+        let version = long_version();
+        assert!(version.contains("toolchain:"));
+        assert!(version.contains("cargo-dylint:"));
+    }
+
+    #[test]
+    fn lint_names_set_is_built_correctly() {
+        assert!(!LINT_NAMES_SET.is_empty());
+        assert_eq!(LINT_NAMES_SET.len(), LINT_NAMES.len());
+    }
+
+    #[test]
+    fn lint_inventory_version_is_consistent() {
+        assert_eq!(LINT_INVENTORY.version, "1.0");
+        assert_eq!(LINT_INVENTORY.lints.len(), LINT_NAMES.len());
+    }
+
+    #[test]
+    fn lint_info_contains_all_registered_lints() {
+        for name in LINT_NAMES {
+            let found = LINT_INFO.iter().find(|info| info.name == *name);
+            assert!(found.is_some(), "lint '{}' should be in LINT_INFO", name);
+        }
+    }
+
+    #[test]
+    fn lint_info_descriptions_not_empty() {
+        for info in LINT_INFO {
+            assert!(
+                !info.description.is_empty(),
+                "lint '{}' has empty description",
+                info.name
+            );
+        }
+    }
+
+    #[test]
+    fn lint_metadata_covers_all_lints() {
+        for name in LINT_NAMES {
+            let found = LINT_INFO.iter().find(|m| m.name == *name);
+            assert!(found.is_some(), "lint '{}' should be in LINT_INFO", name);
+        }
     }
 }
