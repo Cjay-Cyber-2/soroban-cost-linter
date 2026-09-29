@@ -945,3 +945,788 @@ fn run() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // `run()` reads process-wide environment variables, so the tests that set
+    // them must not overlap.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn declare(name: &str, level: &str, description: &str) -> String {
+        format!("declare_lint! {{\n    pub {name},\n    {level},\n    \"{description}\"\n}}\n")
+    }
+
+    fn row(name: &str, category: &str, description: &str) -> String {
+        format!(
+            "    LintMeta {{\n        name: \"{name}\",\n        category: LintCategory::{category},\n        description: \"{description}\",\n    }},\n"
+        )
+    }
+
+    fn dylint_list(names: &[&str]) -> String {
+        format!(
+            "dylint_lint_impl! {{\n    soroban_cost_lints,\n    [\n{}    ]\n}}\n",
+            names
+                .iter()
+                .map(|n| format!("        {n},\n"))
+                .collect::<String>()
+        )
+    }
+
+    /// A minimal, self-consistent `lib.rs` with two lints.
+    fn valid_lib() -> String {
+        format!(
+            "{}{}{}pub const LINT_METADATA: &[LintMeta] = &[\n{}{}];\n",
+            declare("LINT_A", "Warn", "does a"),
+            declare("LINT_B", "Deny", "does b"),
+            dylint_list(&["LINT_A", "LINT_B"]),
+            row("lint_a", "Storage", "does a"),
+            row("lint_b", "Compute", "does b"),
+        )
+    }
+
+    // ---- small helpers -------------------------------------------------
+
+    #[test]
+    fn rust_string_escapes_quotes_and_newlines() {
+        assert_eq!(rust_string("plain"), "\"plain\"");
+        assert_eq!(rust_string("a\"b\nc\\"), "\"a\\\"b\\nc\\\\\"");
+        assert_eq!(rust_string(""), "\"\"");
+    }
+
+    #[test]
+    fn join_quoted_formats_names() {
+        assert_eq!(join_quoted(&[]), "");
+        assert_eq!(join_quoted(&["a"]), "\"a\"");
+        assert_eq!(join_quoted(&["a", "b"]), "\"a\", \"b\"");
+    }
+
+    #[test]
+    fn sorted_diff_is_sorted_and_directional() {
+        let a: HashSet<&str> = ["c", "a", "b"].into_iter().collect();
+        let b: HashSet<&str> = ["b"].into_iter().collect();
+        assert_eq!(sorted_diff(&a, &b), vec!["a", "c"]);
+        assert!(sorted_diff(&b, &a).is_empty());
+    }
+
+    #[test]
+    fn raw_string_literal_picks_shortest_delimiter() {
+        assert_eq!(raw_string_literal("abc"), "r\"abc\"");
+        assert_eq!(raw_string_literal("a\"b"), "r#\"a\"b\"#");
+        assert_eq!(raw_string_literal("a\"#b"), "r##\"a\"#b\"##");
+        assert_eq!(raw_string_literal(""), "r\"\"");
+    }
+
+    #[test]
+    fn error_display_and_source() {
+        let io = Error::from(std::io::Error::other("boom"));
+        assert_eq!(io.to_string(), "I/O error: boom");
+        assert!(std::error::Error::source(&io).is_some());
+
+        let env = Error::MissingEnv;
+        assert!(env.to_string().contains("OUT_DIR"));
+        assert!(std::error::Error::source(&env).is_none());
+
+        let parse = Error::Parse("bad".into());
+        assert_eq!(parse.to_string(), "Parse error: bad");
+        assert!(std::error::Error::source(&parse).is_none());
+    }
+
+    // ---- registration parsers -----------------------------------------
+
+    #[test]
+    fn dylint_impl_absent_is_none() {
+        assert!(parse_dylint_impl("fn main() {}").unwrap().is_none());
+    }
+
+    #[test]
+    fn dylint_impl_lowercases_and_skips_comments_and_blanks() {
+        let src = "dylint_lint_impl! {\n    krate,\n    [\n        // note\n\n        LINT_A,\n        Lint_B\n    ]\n}";
+        assert_eq!(
+            parse_dylint_impl(src).unwrap().unwrap(),
+            vec!["lint_a", "lint_b"]
+        );
+    }
+
+    #[test]
+    fn dylint_impl_errors_without_list_or_close() {
+        assert!(matches!(
+            parse_dylint_impl("dylint_lint_impl! { krate }"),
+            Err(Error::Parse(m)) if m.contains("no lint list")
+        ));
+        assert!(matches!(
+            parse_dylint_impl("dylint_lint_impl! { krate, [ A, B "),
+            Err(Error::Parse(m)) if m.contains("not closed")
+        ));
+    }
+
+    #[test]
+    fn legacy_register_absent_is_none() {
+        assert!(parse_legacy_register_lints("nothing").unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_register_parses_list() {
+        let src = "lint_store.register_lints(&[\n    A,\n    // skip\n    B,\n]);";
+        assert_eq!(
+            parse_legacy_register_lints(src).unwrap().unwrap(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn legacy_register_errors_when_unterminated() {
+        assert!(matches!(
+            parse_legacy_register_lints("lint_store.register_lints(&[ A,"),
+            Err(Error::Parse(m)) if m.contains("end of register_lints")
+        ));
+    }
+
+    #[test]
+    fn register_lints_requires_some_source() {
+        assert!(matches!(
+            parse_register_lints("fn main() {}"),
+            Err(Error::Parse(m)) if m.contains("Could not find")
+        ));
+    }
+
+    #[test]
+    fn register_lints_uses_whichever_list_exists() {
+        let dylint = dylint_list(&["A", "B"]);
+        assert_eq!(parse_register_lints(&dylint).unwrap(), vec!["a", "b"]);
+        let legacy = "lint_store.register_lints(&[\n    B,\n    A,\n]);";
+        assert_eq!(parse_register_lints(legacy).unwrap(), vec!["b", "a"]);
+    }
+
+    #[test]
+    fn register_lints_accepts_identical_lists() {
+        let src = format!(
+            "{}lint_store.register_lints(&[\n    A,\n    B,\n]);",
+            dylint_list(&["A", "B"])
+        );
+        assert_eq!(parse_register_lints(&src).unwrap(), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn register_lints_rejects_different_sets() {
+        let src = format!(
+            "{}lint_store.register_lints(&[\n    A,\n    C,\n]);",
+            dylint_list(&["A", "B"])
+        );
+        match parse_register_lints(&src) {
+            Err(Error::Parse(m)) => {
+                assert!(m.contains("disagree"), "{m}");
+                assert!(m.contains("Only in `dylint_lint_impl!`: [b]"), "{m}");
+                assert!(m.contains("Only in `register_lints`: [c]"), "{m}");
+            }
+            other => panic!("expected disagreement error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_lints_rejects_same_set_in_different_order() {
+        let src = format!(
+            "{}lint_store.register_lints(&[\n    B,\n    A,\n]);",
+            dylint_list(&["A", "B"])
+        );
+        assert!(matches!(
+            parse_register_lints(&src),
+            Err(Error::Parse(m)) if m.contains("different orders")
+        ));
+    }
+
+    // ---- declare_lint! parser -----------------------------------------
+
+    #[test]
+    fn declare_lints_parses_blocks_in_order() {
+        let metas = parse_declare_lints(&valid_lib()).unwrap();
+        assert_eq!(metas.len(), 2);
+        assert_eq!(
+            (metas[0].name.as_str(), metas[0].level.as_str()),
+            ("lint_a", "warn")
+        );
+        assert_eq!(metas[0].description, "does a");
+        assert_eq!(metas[1].name, "lint_b");
+        assert_eq!(metas[1].level, "deny");
+    }
+
+    #[test]
+    fn declare_lints_without_blocks_is_empty() {
+        assert!(parse_declare_lints("fn x() {}").unwrap().is_empty());
+    }
+
+    #[test]
+    fn declare_lints_ignores_comments_attributes_and_braces_in_strings() {
+        let src = "declare_lint! {\n    /// doc\n    #[allow(x)]\n    // c\n    /* b */\n    pub LINT_A,\n    Warn,\n    \"has } brace\"\n}\n";
+        let metas = parse_declare_lints(src).unwrap();
+        assert_eq!(metas[0].name, "lint_a");
+        assert_eq!(metas[0].description, "has } brace");
+    }
+
+    #[test]
+    fn declare_lints_joins_multiline_descriptions() {
+        let src = "declare_lint! {\n    pub LINT_A,\n    Warn,\n    \"first\"\n    \"second\"\n}\n";
+        let metas = parse_declare_lints(src).unwrap();
+        // Lines are joined with a space; only the outermost quotes are trimmed.
+        assert_eq!(metas[0].description, "first\" \"second");
+    }
+
+    #[test]
+    fn declare_lints_accepts_unquoted_description() {
+        let src = "declare_lint! {\n    pub LINT_A,\n    Warn,\n    plain text,\n}\n";
+        assert_eq!(
+            parse_declare_lints(src).unwrap()[0].description,
+            "plain text"
+        );
+    }
+
+    #[test]
+    fn declare_lints_reports_malformed_blocks() {
+        let unclosed = "declare_lint! {\n    pub A,\n    Warn,\n    \"d\"\n";
+        assert!(matches!(
+            parse_declare_lints(unclosed),
+            Err(Error::Parse(m)) if m.contains("unclosed declare_lint! block starting at line 1")
+        ));
+
+        let short = "declare_lint! {\n    pub A,\n    Warn,\n}\n";
+        assert!(matches!(
+            parse_declare_lints(short),
+            Err(Error::Parse(m)) if m.contains("fewer than 3")
+        ));
+
+        let empty_name = "declare_lint! {\n    pub ,\n    Warn,\n    \"d\"\n}\n";
+        assert!(matches!(
+            parse_declare_lints(empty_name),
+            Err(Error::Parse(m)) if m.contains("empty lint name")
+        ));
+
+        let empty_level = "declare_lint! {\n    pub A,\n    ,\n    \"d\"\n}\n";
+        assert!(matches!(
+            parse_declare_lints(empty_level),
+            Err(Error::Parse(m)) if m.contains("empty lint level")
+        ));
+
+        let empty_desc = "declare_lint! {\n    pub A,\n    Warn,\n    \"\"\n}\n";
+        assert!(matches!(
+            parse_declare_lints(empty_desc),
+            Err(Error::Parse(m)) if m.contains("empty description")
+        ));
+    }
+
+    #[test]
+    fn declare_lints_reports_line_of_second_block() {
+        let src = format!(
+            "{}\ndeclare_lint! {{\n    pub B,\n    Warn,\n}}\n",
+            declare("A", "Warn", "d")
+        );
+        assert!(matches!(
+            parse_declare_lints(&src),
+            Err(Error::Parse(m)) if m.contains("line 7")
+        ));
+    }
+
+    // ---- LINT_METADATA parser -----------------------------------------
+
+    #[test]
+    fn lint_metadata_parses_rows() {
+        let rows = parse_lint_metadata(&valid_lib()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows["lint_a"].category, "Storage");
+        assert_eq!(rows["lint_b"].description, "does b");
+    }
+
+    #[test]
+    fn lint_metadata_requires_registry_and_slice_literal() {
+        assert!(matches!(
+            parse_lint_metadata("fn x() {}"),
+            Err(Error::Parse(m)) if m.contains("no `pub const LINT_METADATA`")
+        ));
+        assert!(matches!(
+            parse_lint_metadata("pub const LINT_METADATA: X = other();"),
+            Err(Error::Parse(m)) if m.contains("not a slice literal")
+        ));
+        assert!(matches!(
+            parse_lint_metadata("pub const LINT_METADATA: X = &[ LintMeta {"),
+            Err(Error::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn lint_metadata_rejects_empty_registry() {
+        assert!(matches!(
+            parse_lint_metadata("pub const LINT_METADATA: X = &[];"),
+            Err(Error::Parse(m)) if m.contains("no entries")
+        ));
+    }
+
+    #[test]
+    fn lint_metadata_rejects_incomplete_and_empty_rows() {
+        let missing = "pub const LINT_METADATA: X = &[\n    LintMeta {\n        name: \"a\",\n        category: LintCategory::Storage,\n    },\n];";
+        assert!(matches!(
+            parse_lint_metadata(missing),
+            Err(Error::Parse(m)) if m.contains("Could not parse a LINT_METADATA entry")
+        ));
+
+        let empty = format!(
+            "pub const LINT_METADATA: X = &[\n{}];",
+            row("a", "Storage", "")
+        );
+        assert!(matches!(
+            parse_lint_metadata(&empty),
+            Err(Error::Parse(m)) if m.contains("empty name, category or description")
+        ));
+    }
+
+    #[test]
+    fn lint_metadata_rejects_duplicates_case_insensitively() {
+        let src = format!(
+            "pub const LINT_METADATA: X = &[\n{}{}];",
+            row("dup", "Storage", "one"),
+            row("DUP", "Compute", "two")
+        );
+        assert!(matches!(
+            parse_lint_metadata(&src),
+            Err(Error::Parse(m)) if m.contains("duplicate LINT_METADATA row")
+        ));
+    }
+
+    #[test]
+    fn lint_metadata_accepts_bare_category() {
+        let src = "pub const LINT_METADATA: X = &[\n    LintMeta {\n        name: \"a\",\n        category: Storage,\n        description: \"d\",\n    },\n];";
+        assert_eq!(parse_lint_metadata(src).unwrap()["a"].category, "Storage");
+    }
+
+    // ---- matching_delimiter and literal scanners ------------------------
+
+    #[test]
+    fn matching_delimiter_handles_each_bracket_kind_and_nesting() {
+        assert_eq!(matching_delimiter("(a(b)c)", 0), Ok(6));
+        assert_eq!(matching_delimiter("[a[b]c]", 0), Ok(6));
+        assert_eq!(matching_delimiter("{a{b}c}", 0), Ok(6));
+        assert_eq!(matching_delimiter("x{}", 1), Ok(2));
+    }
+
+    #[test]
+    fn matching_delimiter_rejects_bad_starts() {
+        assert!(
+            matching_delimiter("abc", 0)
+                .unwrap_err()
+                .contains("expected")
+        );
+        assert!(
+            matching_delimiter("{", 5)
+                .unwrap_err()
+                .contains("character boundary")
+        );
+        assert!(
+            matching_delimiter("é{", 1)
+                .unwrap_err()
+                .contains("character boundary")
+        );
+        assert!(
+            matching_delimiter("", 0)
+                .unwrap_err()
+                .contains("no delimiter")
+        );
+        assert!(
+            matching_delimiter("{", 1)
+                .unwrap_err()
+                .contains("no delimiter")
+        );
+    }
+
+    #[test]
+    fn matching_delimiter_reports_unclosed() {
+        assert!(
+            matching_delimiter("{ {}", 0)
+                .unwrap_err()
+                .contains("closes")
+        );
+    }
+
+    #[test]
+    fn matching_delimiter_skips_comments() {
+        assert_eq!(matching_delimiter("{ // }\n }", 0), Ok(8));
+        assert_eq!(matching_delimiter("{ /* } /* } */ } */ }", 0), Ok(20));
+        assert!(matching_delimiter("{ // }", 0).is_err());
+        assert!(
+            matching_delimiter("{ /* never closed", 0)
+                .unwrap_err()
+                .contains("unterminated block comment")
+        );
+    }
+
+    #[test]
+    fn matching_delimiter_skips_string_char_and_raw_literals() {
+        assert_eq!(matching_delimiter("{ \"}\" }", 0), Ok(6));
+        assert_eq!(matching_delimiter("{ \"\\\"}\" }", 0), Ok(8));
+        assert_eq!(matching_delimiter("{ '}' }", 0), Ok(6));
+        assert_eq!(matching_delimiter("{ '\\n' }", 0), Ok(7));
+        assert_eq!(matching_delimiter("{ r\"}\" }", 0), Ok(7));
+        assert_eq!(matching_delimiter("{ r#\"}\"# }", 0), Ok(9));
+        // A lifetime is not a char literal, and `r` alone is just an identifier.
+        assert_eq!(matching_delimiter("{ &'a x }", 0), Ok(8));
+        assert_eq!(matching_delimiter("{ r }", 0), Ok(4));
+        assert!(
+            matching_delimiter("{ \"open", 0)
+                .unwrap_err()
+                .contains("unterminated string")
+        );
+    }
+
+    #[test]
+    fn matching_delimiter_handles_multibyte_text() {
+        assert_eq!(matching_delimiter("{ é }", 0), Ok(5));
+    }
+
+    #[test]
+    fn skip_quoted_honours_escapes() {
+        assert_eq!(skip_quoted("\"ab\" x", 0), Ok(4));
+        assert_eq!(skip_quoted("\"a\\\"b\"", 0), Ok(6));
+        assert!(skip_quoted("\"abc", 0).is_err());
+        assert!(skip_quoted("\"abc\\", 0).is_err());
+    }
+
+    #[test]
+    fn char_literal_end_distinguishes_lifetimes() {
+        assert_eq!(char_literal_end("'a'", 0), Some(3));
+        assert_eq!(char_literal_end("'é'", 0), Some(4));
+        assert_eq!(char_literal_end("'\\n'", 0), Some(4));
+        assert_eq!(char_literal_end("'\\u{1F600}'", 0), Some(11));
+        assert_eq!(char_literal_end("'a ", 0), None);
+        assert_eq!(char_literal_end("'", 0), None);
+        assert_eq!(char_literal_end("'\\", 0), None);
+        assert_eq!(char_literal_end("'\\n", 0), None);
+        assert_eq!(char_literal_end("'\\u{1\n}'", 0), None);
+    }
+
+    #[test]
+    fn raw_string_end_finds_terminator() {
+        assert_eq!(raw_string_end("r\"ab\"", 0), Some(5));
+        assert_eq!(raw_string_end("r#\"a\"b\"#", 0), Some(8));
+        assert_eq!(raw_string_end("r##\"a\"#b\"##", 0), Some(11));
+        assert_eq!(raw_string_end("r\"open", 0), None);
+        assert_eq!(raw_string_end("r#\"open\"", 0), None);
+        assert_eq!(raw_string_end("rx", 0), None);
+        assert_eq!(raw_string_end("r#x", 0), None);
+        assert_eq!(raw_string_end("r", 0), None);
+    }
+
+    // ---- toolchain parser ---------------------------------------------
+
+    fn write(dir: &Path, rel: &str, body: &str) -> PathBuf {
+        let path = dir.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn toolchain_channel_is_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "rust-toolchain",
+            "[toolchain]\nchannel = \"nightly-2026-04-16\"\ncomponents = [\"rustfmt\"]\n",
+        );
+        assert_eq!(
+            parse_toolchain_channel(&path).unwrap(),
+            "nightly-2026-04-16"
+        );
+    }
+
+    #[test]
+    fn toolchain_channel_tolerates_spacing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "t", "   channel   =   \"stable\"  \n");
+        assert_eq!(parse_toolchain_channel(&path).unwrap(), "stable");
+    }
+
+    #[test]
+    fn toolchain_channel_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+        assert!(matches!(
+            parse_toolchain_channel(&missing),
+            Err(Error::Parse(m)) if m.contains("Failed to read")
+        ));
+        for body in [
+            "[toolchain]\n",
+            "channel nightly\n",
+            "channel = nightly\n",
+            "channel = \"unterminated\n",
+        ] {
+            let path = write(dir.path(), "bad", body);
+            assert!(
+                matches!(parse_toolchain_channel(&path), Err(Error::Parse(m)) if m.contains("Could not find 'channel'")),
+                "body {body:?} should be rejected"
+            );
+        }
+    }
+
+    // ---- run() end to end ---------------------------------------------
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        pkg: PathBuf,
+        out: PathBuf,
+    }
+
+    /// Lays out a packaged-crate tree (`lint-data/` snapshot, no workspace
+    /// sibling) so `run()` takes the snapshot branch.
+    fn fixture(lib: &str, docs: &[&str]) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("pkg");
+        let out = dir.path().join("out");
+        fs::create_dir_all(&out).unwrap();
+        write(&pkg, "lint-data/lib.rs", lib);
+        write(
+            &pkg,
+            "lint-data/rust-toolchain",
+            "[toolchain]\nchannel = \"nightly-test\"\n",
+        );
+        for name in docs {
+            write(
+                &pkg,
+                &format!("lint-data/docs/{name}.md"),
+                &format!("# {name}\n"),
+            );
+        }
+        Fixture {
+            _dir: dir,
+            pkg,
+            out,
+        }
+    }
+
+    fn run_with(manifest: Option<&Path>, out: Option<&Path>) -> Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: ENV_LOCK serialises every test that touches these variables.
+        unsafe {
+            match manifest {
+                Some(p) => env::set_var("CARGO_MANIFEST_DIR", p),
+                None => env::remove_var("CARGO_MANIFEST_DIR"),
+            }
+            match out {
+                Some(p) => env::set_var("OUT_DIR", p),
+                None => env::remove_var("OUT_DIR"),
+            }
+        }
+        run()
+    }
+
+    fn parse_err(result: Result<()>) -> String {
+        match result {
+            Err(Error::Parse(m)) => m,
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_generates_all_outputs() {
+        let f = fixture(&valid_lib(), &["lint_a", "lint_b", "README"]);
+        run_with(Some(&f.pkg), Some(&f.out)).unwrap();
+
+        let read = |n: &str| fs::read_to_string(f.out.join(n)).unwrap();
+        let names = read("lint_names.rs");
+        assert!(names.contains("\"lint_a\",") && names.contains("\"lint_b\","));
+        let info = read("lint_info.rs");
+        assert!(info.contains("level: \"warn\"") && info.contains("level: \"deny\""));
+        assert!(read("lint_metadata.rs").contains("category: \"Storage\""));
+        assert!(read("lint_explanations.rs").contains("r\"# lint_a\n\""));
+        let version = read("version_info.rs");
+        assert!(version.contains("PINNED_TOOLCHAIN: &str = \"nightly-test\""));
+        assert!(version.contains(DYLINT_VERSION_CONSTRAINT));
+    }
+
+    #[test]
+    fn run_tolerates_orphan_docs() {
+        let f = fixture(&valid_lib(), &["lint_a", "lint_b", "stray"]);
+        write(&f.pkg, "lint-data/docs/notes.txt", "ignored");
+        run_with(Some(&f.pkg), Some(&f.out)).unwrap();
+    }
+
+    #[test]
+    fn run_requires_environment() {
+        let f = fixture(&valid_lib(), &["lint_a", "lint_b"]);
+        assert!(matches!(
+            run_with(None, Some(&f.out)),
+            Err(Error::MissingEnv)
+        ));
+        assert!(matches!(
+            run_with(Some(&f.pkg), None),
+            Err(Error::MissingEnv)
+        ));
+    }
+
+    #[test]
+    fn run_requires_a_lint_source() {
+        let f = fixture(&valid_lib(), &[]);
+        fs::remove_file(f.pkg.join("lint-data/lib.rs")).unwrap();
+        assert!(parse_err(run_with(Some(&f.pkg), Some(&f.out))).contains("neither was found"));
+    }
+
+    #[test]
+    fn run_reports_unreadable_source() {
+        let f = fixture(&valid_lib(), &[]);
+        fs::remove_file(f.pkg.join("lint-data/lib.rs")).unwrap();
+        fs::create_dir(f.pkg.join("lint-data/lib.rs")).unwrap();
+        assert!(
+            parse_err(run_with(Some(&f.pkg), Some(&f.out))).contains("Failed to read source file")
+        );
+    }
+
+    #[test]
+    fn run_rejects_registered_lint_without_declare_block() {
+        let lib = format!(
+            "{}{}pub const LINT_METADATA: &[LintMeta] = &[\n{}{}];\n",
+            declare("LINT_A", "Warn", "does a"),
+            dylint_list(&["LINT_A", "LINT_B"]),
+            row("lint_a", "Storage", "does a"),
+            row("lint_b", "Storage", "does b"),
+        );
+        let f = fixture(&lib, &["lint_a", "lint_b"]);
+        let msg = parse_err(run_with(Some(&f.pkg), Some(&f.out)));
+        assert!(msg.contains("\"lint_b\"") && msg.contains("missing a declare_lint! block"));
+    }
+
+    #[test]
+    fn run_rejects_declared_but_unregistered_lint() {
+        let lib = format!(
+            "{}{}{}pub const LINT_METADATA: &[LintMeta] = &[\n{}];\n",
+            declare("LINT_A", "Warn", "does a"),
+            declare("LINT_B", "Warn", "does b"),
+            dylint_list(&["LINT_A"]),
+            row("lint_a", "Storage", "does a"),
+        );
+        let f = fixture(&lib, &["lint_a"]);
+        let msg = parse_err(run_with(Some(&f.pkg), Some(&f.out)));
+        assert!(msg.contains("\"lint_b\"") && msg.contains("are not registered"));
+    }
+
+    #[test]
+    fn run_rejects_registered_lint_without_metadata_row() {
+        let lib = format!(
+            "{}{}{}pub const LINT_METADATA: &[LintMeta] = &[\n{}];\n",
+            declare("LINT_A", "Warn", "does a"),
+            declare("LINT_B", "Warn", "does b"),
+            dylint_list(&["LINT_A", "LINT_B"]),
+            row("lint_a", "Storage", "does a"),
+        );
+        let f = fixture(&lib, &["lint_a", "lint_b"]);
+        assert!(parse_err(run_with(Some(&f.pkg), Some(&f.out))).contains("no LINT_METADATA row"));
+    }
+
+    #[test]
+    fn run_rejects_orphan_metadata_row() {
+        let lib = format!(
+            "{}{}pub const LINT_METADATA: &[LintMeta] = &[\n{}{}];\n",
+            declare("LINT_A", "Warn", "does a"),
+            dylint_list(&["LINT_A"]),
+            row("lint_a", "Storage", "does a"),
+            row("ghost", "Storage", "boo"),
+        );
+        let f = fixture(&lib, &["lint_a"]);
+        let msg = parse_err(run_with(Some(&f.pkg), Some(&f.out)));
+        assert!(msg.contains("\"ghost\"") && msg.contains("not registered"));
+    }
+
+    #[test]
+    fn run_rejects_divergent_descriptions_and_truncates_preview() {
+        let lib = format!(
+            "{}{}pub const LINT_METADATA: &[LintMeta] = &[\n{}{}];\n",
+            declare("LINT_A", "Warn", "does a"),
+            dylint_list(&["LINT_A"]),
+            row("lint_a", "Storage", "different"),
+            "",
+        );
+        let f = fixture(&lib, &["lint_a"]);
+        let msg = parse_err(run_with(Some(&f.pkg), Some(&f.out)));
+        assert!(
+            msg.contains("lint_a: declare_lint! has \"does a\", LINT_METADATA has \"different\"")
+        );
+        assert!(!msg.contains("more)"));
+
+        // Seven divergent lints: only five are previewed.
+        let names: Vec<String> = (0..7).map(|i| format!("l{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let upper: Vec<String> = names.iter().map(|n| n.to_uppercase()).collect();
+        let upper_refs: Vec<&str> = upper.iter().map(String::as_str).collect();
+        let mut lib = String::new();
+        for n in &upper {
+            lib.push_str(&declare(n, "Warn", "a"));
+        }
+        lib.push_str(&dylint_list(&upper_refs));
+        lib.push_str("pub const LINT_METADATA: &[LintMeta] = &[\n");
+        for n in &refs {
+            lib.push_str(&row(n, "Storage", "b"));
+        }
+        lib.push_str("];\n");
+        let f = fixture(&lib, &refs);
+        assert!(parse_err(run_with(Some(&f.pkg), Some(&f.out))).contains("(and 2 more)"));
+    }
+
+    #[test]
+    fn run_panics_on_missing_doc_file() {
+        let f = fixture(&valid_lib(), &["lint_a"]);
+        let result = std::panic::catch_unwind(|| run_with(Some(&f.pkg), Some(&f.out)));
+        let payload = result.expect_err("missing doc must fail the build");
+        let msg = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            msg.contains("lint 'lint_b' is registered but has no doc file"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn run_panics_on_unreadable_doc_file() {
+        let f = fixture(&valid_lib(), &["lint_a", "lint_b"]);
+        // A directory named `lint_b.md` exists but cannot be read as text.
+        fs::remove_file(f.pkg.join("lint-data/docs/lint_b.md")).unwrap();
+        fs::create_dir(f.pkg.join("lint-data/docs/lint_b.md")).unwrap();
+        let result = std::panic::catch_unwind(|| run_with(Some(&f.pkg), Some(&f.out)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_reports_missing_toolchain_and_unwritable_output() {
+        let f = fixture(&valid_lib(), &["lint_a", "lint_b"]);
+        fs::remove_file(f.pkg.join("lint-data/rust-toolchain")).unwrap();
+        assert!(parse_err(run_with(Some(&f.pkg), Some(&f.out))).contains("Failed to read"));
+
+        let f = fixture(&valid_lib(), &["lint_a", "lint_b"]);
+        let missing_out = f.out.join("does/not/exist");
+        assert!(
+            parse_err(run_with(Some(&f.pkg), Some(&missing_out)))
+                .contains("Failed to write version_info.rs")
+        );
+    }
+
+    #[test]
+    fn run_prefers_workspace_sources_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("cargo-cost-lint");
+        let out = dir.path().join("out");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::create_dir_all(&out).unwrap();
+        write(dir.path(), "soroban_cost_lints/src/lib.rs", &valid_lib());
+        write(
+            dir.path(),
+            "rust-toolchain",
+            "[toolchain]\nchannel = \"ws-channel\"\n",
+        );
+        write(dir.path(), "docs/lints/lint_a.md", "a");
+        write(dir.path(), "docs/lints/lint_b.md", "b");
+        run_with(Some(&pkg), Some(&out)).unwrap();
+        assert!(
+            fs::read_to_string(out.join("version_info.rs"))
+                .unwrap()
+                .contains("ws-channel")
+        );
+    }
+}
