@@ -1034,31 +1034,31 @@
         {
           "lint_name": "redundant_env_clone",
           "file": "src/lib.rs",
-          "line": 18,
+          "line": 51,
           "message": "redundant clone on Env object"
         },
         {
           "lint_name": "redundant_env_clone",
           "file": "src/lib.rs",
-          "line": 29,
+          "line": 69,
           "message": "redundant clone on Env object"
         },
         {
           "lint_name": "redundant_env_clone",
           "file": "src/lib.rs",
-          "line": 55,
+          "line": 107,
           "message": "redundant clone on Env object"
         },
         {
           "lint_name": "unnecessary_host_function_call",
           "file": "src/lib.rs",
-          "line": 59,
+          "line": 111,
           "message": "unnecessary host function call inside loop"
         },
         {
           "lint_name": "symbol_new_for_short_literal",
           "file": "src/lib.rs",
-          "line": 60,
+          "line": 112,
           "message": "Symbol::new called with a short literal that could use symbol_short! macro"
         }
       ],
@@ -1066,85 +1066,85 @@
         {
           "lint_name": "instance_storage_for_unbounded_data",
           "file": "src/lib.rs",
-          "line": 22,
+          "line": 55,
           "message": "unbounded collection written to instance storage"
         },
         {
           "lint_name": "instance_storage_for_unbounded_data",
           "file": "src/lib.rs",
-          "line": 34,
+          "line": 74,
           "message": "unbounded collection written to instance storage"
         },
         {
           "lint_name": "unbounded_input_loop",
           "file": "src/lib.rs",
-          "line": 43,
+          "line": 90,
           "message": "loop is driven by caller-supplied input and performs storage writes inside the loop body"
         },
         {
           "lint_name": "soroban_storage_in_loop",
           "file": "src/lib.rs",
-          "line": 47,
+          "line": 94,
           "message": "storage operation inside a loop"
         },
         {
           "lint_name": "loop_invariant_storage_access",
           "file": "src/lib.rs",
-          "line": 47,
+          "line": 94,
           "message": "loop-invariant storage operation inside a loop"
         },
         {
           "lint_name": "loop_invariant_storage_access",
           "file": "src/lib.rs",
-          "line": 47,
+          "line": 94,
           "message": "loop-invariant storage operation inside a loop"
         },
         {
           "lint_name": "loop_invariant_storage_access",
           "file": "src/lib.rs",
-          "line": 47,
+          "line": 94,
           "message": "loop-invariant storage operation inside a loop"
         },
         {
           "lint_name": "soroban_storage_in_loop",
           "file": "src/lib.rs",
-          "line": 48,
+          "line": 95,
           "message": "storage operation inside a loop"
         },
         {
           "lint_name": "loop_invariant_storage_access",
           "file": "src/lib.rs",
-          "line": 48,
+          "line": 95,
           "message": "loop-invariant storage operation inside a loop"
         },
         {
           "lint_name": "loop_invariant_storage_access",
           "file": "src/lib.rs",
-          "line": 48,
+          "line": 95,
           "message": "loop-invariant storage operation inside a loop"
         },
         {
           "lint_name": "instance_storage_for_unbounded_data",
           "file": "src/lib.rs",
-          "line": 51,
+          "line": 98,
           "message": "unbounded collection written to instance storage"
         },
         {
           "lint_name": "ledger_context_read_in_loop",
           "file": "src/lib.rs",
-          "line": 59,
+          "line": 111,
           "message": "reading ledger context `sequence` inside a loop — the value cannot change during this invocation"
         },
         {
           "lint_name": "storage_key_construction_in_loop",
           "file": "src/lib.rs",
-          "line": 60,
+          "line": 112,
           "message": "storage key constructed inside a loop body"
         },
         {
           "lint_name": "bytes_append_in_loop",
           "file": "src/lib.rs",
-          "line": 61,
+          "line": 113,
           "message": "repeatedly growing SDK container inside a loop"
         }
       ]
